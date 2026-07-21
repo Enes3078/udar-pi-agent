@@ -54,7 +54,19 @@ Ajan zaten `quantity_delta`, `counter_value`, `idempotency_key`, `gpio`, `timest
 
 ## Tek Komut Kurulum
 
-Raspberry Pi OS üzerinde:
+Raspberry Pi OS Lite üzerinde, git kurulu olmasa bile tek satır:
+
+```bash
+wget -qO- https://raw.githubusercontent.com/Enes3078/udar-pi-agent/main/bootstrap.sh | bash
+```
+
+Eğer `wget` yoksa:
+
+```bash
+sudo apt-get update && sudo apt-get install -y wget && wget -qO- https://raw.githubusercontent.com/Enes3078/udar-pi-agent/main/bootstrap.sh | bash
+```
+
+Alternatif manuel kurulum:
 
 ```bash
 cd ~
