@@ -7,6 +7,156 @@ Bu ajan, makineden Raspberry Pi'a gelen 3.3V sinyali okuyup UDAR CRM üretim API
 
 Her iki modda da günlük sayaç gece yeni güne geçince sıfırlanır, fakat olay geçmişi yerel SQLite logunda saklanır. İnternet veya CRM kesilirse veriler kuyruğa alınır ve tekrar gönderilir.
 
+## Git Kurulu Makinede Sıfırdan Kurulum
+
+Raspberry Pi OS Lite üzerinde git varsa yeni cihaza kurulumu şu komutlarla yap:
+
+```bash
+cd ~
+git clone https://github.com/Enes3078/udar-pi-agent.git
+cd udar-pi-agent
+chmod +x install.sh update.sh diagnose_gpio.py
+bash install.sh --configure
+```
+
+Script senden sırayla şunları ister:
+
+- CRM adresi: genelde `https://crm.aykadoor.com`
+- CRM cihaz tokeni: CRM > İmalat Yönetimi > Cihaz & Veri ekranındaki cihaz kartından kopyalanır.
+- GPIO BCM pini:
+  - fiziksel pin 13 için `27`
+  - fiziksel pin 11 için `17`
+- makine tipi:
+  - `1`: vuruş/sayım bazlı makine
+  - `2`: süre bazlı makine
+- istasyon kodu: CRM'deki istasyon koduyla birebir aynı yazılır. Örn. `LZR-1`, `MKS-1`, `ABAKAN2`.
+
+Kurulum bittikten sonra servisi başlat:
+
+```bash
+sudo systemctl restart udar-pi-agent
+sudo systemctl status udar-pi-agent
+journalctl -u udar-pi-agent -f
+```
+
+## Eski Kurulumu Silip Temiz Kurmak
+
+Eski env dahil her şeyi sıfırlamak istiyorsan:
+
+```bash
+sudo systemctl stop udar-pi-agent || true
+sudo systemctl disable udar-pi-agent || true
+sudo rm -f /etc/systemd/system/udar-pi-agent.service
+sudo rm -f /etc/udar-pi-agent.env
+sudo rm -rf /opt/udar-pi-agent /var/lib/udar-pi-agent
+sudo systemctl daemon-reload
+
+rm -rf ~/udar-pi-agent
+git clone https://github.com/Enes3078/udar-pi-agent.git ~/udar-pi-agent
+cd ~/udar-pi-agent
+chmod +x install.sh update.sh diagnose_gpio.py
+bash install.sh --configure
+
+sudo systemctl restart udar-pi-agent
+journalctl -u udar-pi-agent -f
+```
+
+## Mevcut Kurulumu Güncellemek
+
+Env dosyasını koruyarak son kodu çekmek için:
+
+```bash
+cd ~/udar-pi-agent
+bash update.sh
+journalctl -u udar-pi-agent -f
+```
+
+Makine tipini, pini veya tokeni yeniden ayarlamak istersen:
+
+```bash
+cd ~/udar-pi-agent
+bash install.sh --configure
+sudo systemctl restart udar-pi-agent
+```
+
+## Vuruş Bazlı Makine İçin Örnek Ayar
+
+Her vuruşta kısa süreli `0 -> 1 -> 0` sinyal geliyorsa:
+
+```env
+UDAR_CRM_URL=https://crm.aykadoor.com
+UDAR_DEVICE_TOKEN=CRMDEKI_CIHAZ_TOKENI
+
+UDAR_GPIO_BCM=27
+UDAR_PULL_UP=false
+UDAR_MEASUREMENT_MODE=pulse
+UDAR_PULSE_EDGE=rising
+UDAR_POLL_INTERVAL_SECONDS=0.001
+UDAR_BOUNCE_SECONDS=0.001
+UDAR_DAILY_RESET=true
+
+UDAR_STATION_CODE=ABAKAN2
+UDAR_NOTE="ABAKAN2 vurus sayimi"
+UDAR_HTTP_TIMEOUT=5
+UDAR_QUEUE_DB=/var/lib/udar-pi-agent/machine_events.sqlite3
+```
+
+Boşta `1`, vuruş anında `0` görüyorsan:
+
+```env
+UDAR_PULSE_EDGE=falling
+```
+
+Ne olduğunu test ederken geçici olarak:
+
+```env
+UDAR_PULSE_EDGE=both
+```
+
+## Süre Bazlı Makine İçin Örnek Ayar
+
+Makine çalışırken voltaj sürekli `1`, durunca `0` ise:
+
+```env
+UDAR_CRM_URL=https://crm.aykadoor.com
+UDAR_DEVICE_TOKEN=CRMDEKI_CIHAZ_TOKENI
+
+UDAR_GPIO_BCM=27
+UDAR_PULL_UP=false
+UDAR_MEASUREMENT_MODE=duration
+UDAR_DURATION_UNIT=seconds
+UDAR_MIN_DURATION_SECONDS=0.2
+UDAR_POLL_INTERVAL_SECONDS=0.002
+UDAR_BOUNCE_SECONDS=0.005
+UDAR_DAILY_RESET=true
+
+UDAR_STATION_CODE=LZR-1
+UDAR_NOTE="LZR-1 calisma suresi"
+UDAR_HTTP_TIMEOUT=5
+UDAR_QUEUE_DB=/var/lib/udar-pi-agent/machine_events.sqlite3
+```
+
+## GPIO Testi
+
+CRM'ye göndermeden sadece pinin okunup okunmadığını görmek için:
+
+```bash
+sudo systemctl stop udar-pi-agent
+python3 ~/udar-pi-agent/diagnose_gpio.py --pin 27 --edge both --poll 0.001 --debounce 0.001
+```
+
+Çalışan pin fiziksel pin 11 ise:
+
+```bash
+python3 ~/udar-pi-agent/diagnose_gpio.py --pin 17 --edge both --poll 0.001 --debounce 0.001
+```
+
+Test bitince:
+
+```bash
+sudo systemctl restart udar-pi-agent
+```
+
 ## Fiziksel Bağlantı
 
 Varsayılan bağlantı:
