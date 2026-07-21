@@ -1,0 +1,16 @@
+[Unit]
+Description=UDAR CRM Raspberry Pi GPIO Machine Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/udar-pi-agent.env
+ExecStart=/usr/bin/python3 /opt/udar-pi-agent/udar_pi_agent.py
+Restart=always
+RestartSec=3
+User=root
+WorkingDirectory=/opt/udar-pi-agent
+
+[Install]
+WantedBy=multi-user.target
