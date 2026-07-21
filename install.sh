@@ -48,7 +48,7 @@ env_quote() {
 }
 
 write_env_file() {
-  local crm_url device_token gpio_bcm pull_up bounce mode duration_unit min_duration station_code line_id operator_id note
+  local crm_url device_token gpio_bcm pull_up bounce poll_interval pulse_edge mode duration_unit min_duration station_code line_id operator_id note
 
   crm_url="$(ask_default "CRM adresi" "$(current_env_value UDAR_CRM_URL || true)")"
   crm_url="${crm_url:-https://crm.aykadoor.com}"
@@ -65,6 +65,8 @@ write_env_file() {
   pull_up="${pull_up:-false}"
   bounce="$(ask_default "Sinyal filtre suresi / bounce saniye" "$(current_env_value UDAR_BOUNCE_SECONDS || true)")"
   bounce="${bounce:-0.05}"
+  poll_interval="$(ask_default "GPIO okuma araligi saniye" "$(current_env_value UDAR_POLL_INTERVAL_SECONDS || true)")"
+  poll_interval="${poll_interval:-0.002}"
 
   echo
   echo "Makine tipi sec:"
@@ -87,6 +89,13 @@ write_env_file() {
     note="${note:-GPIO${gpio_bcm} sure olcumu}"
   else
     mode="pulse"
+    echo
+    echo "Pulse kenari sec:"
+    echo "  rising  : bos 0, vurus 1 ise"
+    echo "  falling : bos 1, vurus 0 ise"
+    echo "  both    : her 0/1 degisimini say"
+    pulse_edge="$(ask_default "Pulse kenari" "$(current_env_value UDAR_PULSE_EDGE || true)")"
+    pulse_edge="${pulse_edge:-rising}"
     duration_unit="seconds"
     min_duration="$(current_env_value UDAR_MIN_DURATION_SECONDS || true)"
     min_duration="${min_duration:-0.2}"
@@ -105,8 +114,10 @@ UDAR_DEVICE_TOKEN=$device_token
 UDAR_GPIO_BCM=$gpio_bcm
 UDAR_PULL_UP=$pull_up
 UDAR_BOUNCE_SECONDS=$bounce
+UDAR_POLL_INTERVAL_SECONDS=$poll_interval
 
 UDAR_MEASUREMENT_MODE=$mode
+UDAR_PULSE_EDGE=${pulse_edge:-rising}
 UDAR_DURATION_UNIT=$duration_unit
 UDAR_MIN_DURATION_SECONDS=$min_duration
 UDAR_DAILY_RESET=true
@@ -132,6 +143,7 @@ sudo systemctl stop udar-pi-agent 2>/dev/null || true
 echo "[UDAR] Dosyalar kuruluyor..."
 sudo mkdir -p "$APP_DIR" "$STATE_DIR"
 sudo cp "$REPO_DIR/udar_pi_agent.py" "$APP_DIR/udar_pi_agent.py"
+sudo cp "$REPO_DIR/diagnose_gpio.py" "$APP_DIR/diagnose_gpio.py"
 sudo cp "$REPO_DIR/udar-pi-agent.service" "$SERVICE_FILE"
 
 if [ ! -f "$ENV_FILE" ]; then

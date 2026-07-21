@@ -151,8 +151,32 @@ Elle değiştireceğin ana satır:
 
 ```env
 UDAR_MEASUREMENT_MODE=pulse
+UDAR_PULSE_EDGE=rising
+UDAR_POLL_INTERVAL_SECONDS=0.002
+UDAR_BOUNCE_SECONDS=0.005
 UDAR_NOTE=GPIO27 vurus sayimi
 ```
+
+Eğer makine boşta `1`, vuruşta `0` veriyorsa:
+
+```env
+UDAR_PULSE_EDGE=falling
+```
+
+Ne olduğundan emin değilsen geçici test için:
+
+```env
+UDAR_PULSE_EDGE=both
+```
+
+GPIO'yu CRM/API olmadan test etmek için:
+
+```bash
+sudo systemctl stop udar-pi-agent
+python3 ~/udar-pi-agent/diagnose_gpio.py --pin 27 --edge rising --poll 0.002 --debounce 0.005
+```
+
+Boşta `0`, vuruşta `1` ise `rising`; boşta `1`, vuruşta `0` ise `falling` kullan.
 
 ## Süre Modu
 

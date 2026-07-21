@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import os
-import queue
 import signal
 import socket
 import sqlite3
@@ -32,7 +31,7 @@ except ImportError as exc:  # pragma: no cover
     raise SystemExit("python3-requests is required. Run: sudo apt install python3-requests") from exc
 
 try:
-    from gpiozero import Button, DigitalInputDevice
+    from gpiozero import DigitalInputDevice
 except ImportError as exc:  # pragma: no cover
     raise SystemExit("python3-gpiozero is required. Run: sudo apt install python3-gpiozero") from exc
 
@@ -55,6 +54,8 @@ class Config:
     timeout: float = 5.0
     queue_db: Path = Path("/var/lib/udar-pi-agent/machine_events.sqlite3")
     measurement_mode: str = "pulse"
+    pulse_edge: str = "rising"
+    poll_interval_seconds: float = 0.002
     duration_unit: str = "seconds"
     min_duration_seconds: float = 0.2
     daily_reset: bool = True
@@ -76,6 +77,9 @@ def load_config() -> Config:
     mode = env("UDAR_MEASUREMENT_MODE", "pulse").lower()
     if mode not in {"pulse", "duration"}:
         raise SystemExit("UDAR_MEASUREMENT_MODE must be pulse or duration")
+    pulse_edge = env("UDAR_PULSE_EDGE", "rising").lower()
+    if pulse_edge not in {"rising", "falling", "both"}:
+        raise SystemExit("UDAR_PULSE_EDGE must be rising, falling, or both")
     unit = env("UDAR_DURATION_UNIT", "seconds").lower()
     if unit not in {"seconds", "minutes"}:
         raise SystemExit("UDAR_DURATION_UNIT must be seconds or minutes")
@@ -88,6 +92,8 @@ def load_config() -> Config:
         timeout=float(env("UDAR_HTTP_TIMEOUT", "5")),
         queue_db=Path(env("UDAR_QUEUE_DB", "/var/lib/udar-pi-agent/machine_events.sqlite3")),
         measurement_mode=mode,
+        pulse_edge=pulse_edge,
+        poll_interval_seconds=float(env("UDAR_POLL_INTERVAL_SECONDS", "0.002")),
         duration_unit=unit,
         min_duration_seconds=float(env("UDAR_MIN_DURATION_SECONDS", "0.2")),
         daily_reset=bool_env("UDAR_DAILY_RESET", "true"),
@@ -322,15 +328,51 @@ def enqueue_measurement(config: Config, events: PersistentQueue, *, delta: float
 
 
 def run_pulse_mode(config: Config, events: PersistentQueue, stop: threading.Event) -> None:
-    pulse_queue: queue.Queue[None] = queue.Queue()
-    button = Button(config.gpio_bcm, pull_up=config.pull_up, bounce_time=config.bounce_time)
-    button.when_pressed = lambda: pulse_queue.put(None)
+    pin = DigitalInputDevice(config.gpio_bcm, pull_up=config.pull_up)
+    last_value = bool(pin.value)
+    last_counted_at = 0.0
+    print(
+        f"pulse polling started edge={config.pulse_edge} initial_value={int(last_value)} poll={config.poll_interval_seconds}s debounce={config.bounce_time}s",
+        flush=True,
+    )
     while not stop.is_set():
-        try:
-            pulse_queue.get(timeout=0.5)
-        except queue.Empty:
+        value = bool(pin.value)
+        if value == last_value:
+            stop.wait(config.poll_interval_seconds)
             continue
-        enqueue_measurement(config, events, delta=1.0)
+
+        now = time.monotonic()
+        is_rising = (not last_value) and value
+        is_falling = last_value and (not value)
+        last_value = value
+
+        if config.bounce_time > 0 and now - last_counted_at < config.bounce_time:
+            print(f"pulse ignored bounce value={int(value)}", flush=True)
+            stop.wait(config.poll_interval_seconds)
+            continue
+
+        should_count = (
+            (config.pulse_edge == "rising" and is_rising)
+            or (config.pulse_edge == "falling" and is_falling)
+            or (config.pulse_edge == "both")
+        )
+        if not should_count:
+            print(f"pulse edge ignored edge={'rising' if is_rising else 'falling'} value={int(value)}", flush=True)
+            stop.wait(config.poll_interval_seconds)
+            continue
+
+        last_counted_at = now
+        enqueue_measurement(
+            config,
+            events,
+            delta=1.0,
+            extra={
+                "pulse": {
+                    "edge": "rising" if is_rising else "falling",
+                    "value": int(value),
+                }
+            },
+        )
 
 
 def run_duration_mode(config: Config, events: PersistentQueue, stop: threading.Event) -> None:
