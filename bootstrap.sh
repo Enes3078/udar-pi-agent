@@ -6,6 +6,10 @@ TARGET_DIR="${HOME}/udar-pi-agent"
 
 echo "[UDAR] Raspberry Pi ajan kurulumu basliyor..."
 echo "[UDAR] Gerekli paketler kuruluyor: git, python GPIO, requests, sqlite"
+if command -v dpkg >/dev/null 2>&1; then
+  echo "[UDAR] Yarım kalmış dpkg işlemleri toparlanıyor..."
+  sudo dpkg --configure -a
+fi
 sudo apt-get update
 sudo apt-get install -y git ca-certificates python3-gpiozero python3-requests python3-rpi.gpio sqlite3
 
@@ -31,4 +35,3 @@ echo "[UDAR] Kurulum tamamlandi."
 echo "[UDAR] Servisi baslatmak icin:"
 echo "  sudo systemctl restart udar-pi-agent"
 echo "  journalctl -u udar-pi-agent -f"
-
