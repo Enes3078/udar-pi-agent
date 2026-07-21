@@ -64,7 +64,25 @@ chmod +x install.sh update.sh
 bash install.sh
 ```
 
-`/etc/udar-pi-agent.env` içinde en az şu alanları doldur:
+Script sana şunları sorar:
+
+- CRM adresi
+- cihaz tokeni
+- GPIO pini
+- makine tipi:
+  - `1`: vuruş/sayım bazlı
+  - `2`: süre/saniye bazlı
+- istasyon kodu
+
+Sonradan ayarı değiştirmek için:
+
+```bash
+cd ~/udar-pi-agent
+bash install.sh --configure
+sudo systemctl restart udar-pi-agent
+```
+
+Elle düzenlemek istersen:
 
 ```bash
 sudo nano /etc/udar-pi-agent.env
@@ -101,6 +119,14 @@ Bu işlem:
 - ajan dosyasını `/opt/udar-pi-agent` altına kopyalar,
 - systemd servisini yeniden başlatır.
 
+Güncelleme sırasında makine tipi sorulmaz. Makineyi vuruştan süreye veya süreden vuruşa çevirmek istersen ayrıca:
+
+```bash
+cd ~/udar-pi-agent
+bash install.sh --configure
+sudo systemctl restart udar-pi-agent
+```
+
 ## Elle Bağımlılık Kurulumu
 
 Kurulum scripti paketleri otomatik kurar. Gerekirse elle:
@@ -121,6 +147,13 @@ UDAR_BOUNCE_SECONDS=0.05
 
 GPIO17'ye her 3.3V geldiğinde ajan `quantity_delta=1` gönderir. `counter_value` o günün toplam sayısıdır.
 
+Elle değiştireceğin ana satır:
+
+```env
+UDAR_MEASUREMENT_MODE=pulse
+UDAR_NOTE=GPIO27 vurus sayimi
+```
+
 ## Süre Modu
 
 Voltaj aktif kaldığı süre iş olarak sayılacak makinelerde:
@@ -133,6 +166,15 @@ UDAR_DAILY_RESET=true
 ```
 
 GPIO yüksek olunca süre başlar, GPIO tekrar 0 olunca tek kayıt olarak toplam süre gönderilir. `quantity_delta` o çalışma periyodunun süresi, `counter_value` o günün toplam çalışma süresidir. CRM, bu süre aralığını tablet oturumlarına göre ilgili çalışanlara dağıtır; moladaki veya sonradan gelen çalışan önceki süreyi almaz.
+
+Elle değiştireceğin ana satırlar:
+
+```env
+UDAR_MEASUREMENT_MODE=duration
+UDAR_DURATION_UNIT=seconds
+UDAR_MIN_DURATION_SECONDS=0.2
+UDAR_NOTE=GPIO27 sure olcumu
+```
 
 ## Yerel Log ve Kuyruk
 

@@ -8,9 +8,8 @@ echo "[UDAR] Repo guncelleniyor..."
 git pull --ff-only
 
 echo "[UDAR] Ajan tekrar kuruluyor; /etc/udar-pi-agent.env korunacak..."
-bash "$REPO_DIR/install.sh"
+bash "$REPO_DIR/install.sh" --no-config
 
 echo "[UDAR] Servis yeniden baslatiliyor..."
 sudo systemctl restart udar-pi-agent
 sudo systemctl --no-pager --full status udar-pi-agent
-
