@@ -92,7 +92,11 @@ UDAR_PULL_UP=false
 UDAR_MEASUREMENT_MODE=pulse
 UDAR_PULSE_EDGE=rising
 UDAR_POLL_INTERVAL_SECONDS=0.001
-UDAR_BOUNCE_SECONDS=0.001
+UDAR_BOUNCE_SECONDS=0.02
+UDAR_PULSE_MIN_ACTIVE_SECONDS=0.02
+UDAR_PULSE_REARM_SECONDS=0.20
+UDAR_PULSE_MAX_ACTIVE_SECONDS=10.0
+UDAR_PULSE_MIN_INTERVAL_SECONDS=0.20
 UDAR_DAILY_RESET=true
 
 UDAR_STATION_CODE=ABAKAN2
@@ -112,6 +116,23 @@ Ne olduğunu test ederken geçici olarak:
 ```env
 UDAR_PULSE_EDGE=both
 ```
+
+Yeni ajan bir GPIO değişimini hemen işlem saymaz. Pin önce pasif durumda
+kararlı kalmalı, aktif sinyal gelmeli ve tekrar pasif duruma dönmelidir. Böylece
+ajan açılırken HIGH olan pin, HIGH'da takılı kalan kablo ve çok kısa elektrik
+gürültüleri sahte üretim oluşturmaz.
+
+Güncelleme öncesinde oluşmuş ve henüz sunucuya gönderilmemiş sahte kayıtları
+bir defaya mahsus temizlemek için önce servisi durdur:
+
+```bash
+sudo systemctl stop udar-pi-agent
+sudo sqlite3 /var/lib/udar-pi-agent/machine_events.sqlite3 "DELETE FROM events;"
+sudo systemctl start udar-pi-agent
+```
+
+Bu komut yalnız gönderilmeyi bekleyen kuyruğu siler; yerel `event_log` geçmişini
+silmez. İnternet kesintisinde birikmiş gerçek kayıtlar varsa bu temizliği yapma.
 
 ## Süre Bazlı Makine İçin Örnek Ayar
 

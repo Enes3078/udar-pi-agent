@@ -48,7 +48,7 @@ env_quote() {
 }
 
 write_env_file() {
-  local crm_url device_token gpio_bcm pull_up bounce poll_interval pulse_edge mode duration_unit min_duration station_code line_id operator_id note
+  local crm_url device_token gpio_bcm pull_up bounce poll_interval pulse_edge pulse_min_active pulse_rearm pulse_max_active pulse_min_interval mode duration_unit min_duration station_code line_id operator_id note
 
   crm_url="$(ask_default "CRM adresi" "$(current_env_value UDAR_CRM_URL || true)")"
   crm_url="${crm_url:-https://crm.aykadoor.com}"
@@ -96,6 +96,14 @@ write_env_file() {
     echo "  both    : her 0/1 degisimini say"
     pulse_edge="$(ask_default "Pulse kenari" "$(current_env_value UDAR_PULSE_EDGE || true)")"
     pulse_edge="${pulse_edge:-rising}"
+    pulse_min_active="$(ask_default "Sinyalin en az aktif kalacagi sure (sn)" "$(current_env_value UDAR_PULSE_MIN_ACTIVE_SECONDS || true)")"
+    pulse_min_active="${pulse_min_active:-0.02}"
+    pulse_rearm="$(ask_default "Yeni vurus oncesi pasif kalma suresi (sn)" "$(current_env_value UDAR_PULSE_REARM_SECONDS || true)")"
+    pulse_rearm="${pulse_rearm:-0.20}"
+    pulse_max_active="$(ask_default "Tek vurusun azami aktif suresi (sn)" "$(current_env_value UDAR_PULSE_MAX_ACTIVE_SECONDS || true)")"
+    pulse_max_active="${pulse_max_active:-10.0}"
+    pulse_min_interval="$(ask_default "Iki vurus arasindaki asgari sure (sn)" "$(current_env_value UDAR_PULSE_MIN_INTERVAL_SECONDS || true)")"
+    pulse_min_interval="${pulse_min_interval:-0.20}"
     duration_unit="seconds"
     min_duration="$(current_env_value UDAR_MIN_DURATION_SECONDS || true)"
     min_duration="${min_duration:-0.2}"
@@ -118,6 +126,10 @@ UDAR_POLL_INTERVAL_SECONDS=$poll_interval
 
 UDAR_MEASUREMENT_MODE=$mode
 UDAR_PULSE_EDGE=${pulse_edge:-rising}
+UDAR_PULSE_MIN_ACTIVE_SECONDS=${pulse_min_active:-0.02}
+UDAR_PULSE_REARM_SECONDS=${pulse_rearm:-0.20}
+UDAR_PULSE_MAX_ACTIVE_SECONDS=${pulse_max_active:-10.0}
+UDAR_PULSE_MIN_INTERVAL_SECONDS=${pulse_min_interval:-0.20}
 UDAR_DURATION_UNIT=$duration_unit
 UDAR_MIN_DURATION_SECONDS=$min_duration
 UDAR_DAILY_RESET=true

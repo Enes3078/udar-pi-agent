@@ -56,6 +56,10 @@ class Config:
     measurement_mode: str = "pulse"
     pulse_edge: str = "rising"
     poll_interval_seconds: float = 0.002
+    pulse_min_active_seconds: float = 0.02
+    pulse_rearm_seconds: float = 0.20
+    pulse_max_active_seconds: float = 10.0
+    pulse_min_interval_seconds: float = 0.20
     duration_unit: str = "seconds"
     min_duration_seconds: float = 0.2
     daily_reset: bool = True
@@ -94,6 +98,10 @@ def load_config() -> Config:
         measurement_mode=mode,
         pulse_edge=pulse_edge,
         poll_interval_seconds=float(env("UDAR_POLL_INTERVAL_SECONDS", "0.002")),
+        pulse_min_active_seconds=float(env("UDAR_PULSE_MIN_ACTIVE_SECONDS", "0.02")),
+        pulse_rearm_seconds=float(env("UDAR_PULSE_REARM_SECONDS", "0.20")),
+        pulse_max_active_seconds=float(env("UDAR_PULSE_MAX_ACTIVE_SECONDS", "10.0")),
+        pulse_min_interval_seconds=float(env("UDAR_PULSE_MIN_INTERVAL_SECONDS", "0.20")),
         duration_unit=unit,
         min_duration_seconds=float(env("UDAR_MIN_DURATION_SECONDS", "0.2")),
         daily_reset=bool_env("UDAR_DAILY_RESET", "true"),
@@ -327,52 +335,134 @@ def enqueue_measurement(config: Config, events: PersistentQueue, *, delta: float
     print(f"{config.measurement_mode} delta={delta:.4f} total={total:.4f} seq={sequence}", flush=True)
 
 
+class PulseCycleDetector:
+    """Accept only a complete, stable inactive -> active -> inactive cycle."""
+
+    def __init__(
+        self,
+        *,
+        active_level: bool,
+        min_active_seconds: float,
+        rearm_seconds: float,
+        max_active_seconds: float,
+        min_interval_seconds: float,
+    ):
+        self.active_level = active_level
+        self.min_active_seconds = max(0.0, min_active_seconds)
+        self.rearm_seconds = max(0.0, rearm_seconds)
+        self.max_active_seconds = max(0.0, max_active_seconds)
+        self.min_interval_seconds = max(0.0, min_interval_seconds)
+        self.stable_value: bool | None = None
+        self.candidate_value: bool | None = None
+        self.candidate_since = 0.0
+        self.inactive_since: float | None = None
+        self.active_started_at: float | None = None
+        self.last_emitted_at = float("-inf")
+
+    def feed(self, value: bool, now: float) -> dict[str, Any] | None:
+        value = bool(value)
+        if self.stable_value is None:
+            self.stable_value = value
+            self.candidate_value = value
+            self.candidate_since = now
+            if value != self.active_level:
+                self.inactive_since = now
+            return None
+
+        if value != self.candidate_value:
+            self.candidate_value = value
+            self.candidate_since = now
+            return None
+
+        if value == self.stable_value:
+            return None
+
+        required_stable = self.min_active_seconds if value == self.active_level else self.rearm_seconds
+        if now - self.candidate_since < required_stable:
+            return None
+
+        previous = self.stable_value
+        self.stable_value = value
+
+        if value == self.active_level:
+            inactive_for = (
+                self.candidate_since - self.inactive_since
+                if self.inactive_since is not None
+                else 0.0
+            )
+            if previous != self.active_level and inactive_for >= self.rearm_seconds:
+                self.active_started_at = self.candidate_since
+            else:
+                self.active_started_at = None
+            return None
+
+        self.inactive_since = self.candidate_since
+        if previous != self.active_level or self.active_started_at is None:
+            return None
+
+        active_seconds = max(0.0, self.candidate_since - self.active_started_at)
+        self.active_started_at = None
+        if active_seconds < self.min_active_seconds:
+            return None
+        if self.max_active_seconds > 0 and active_seconds > self.max_active_seconds:
+            return {
+                "accepted": False,
+                "reason": "active_too_long",
+                "active_seconds": active_seconds,
+            }
+        if self.candidate_since - self.last_emitted_at < self.min_interval_seconds:
+            return {
+                "accepted": False,
+                "reason": "rate_limited",
+                "active_seconds": active_seconds,
+            }
+        self.last_emitted_at = self.candidate_since
+        return {
+            "accepted": True,
+            "active_seconds": active_seconds,
+        }
+
+
 def run_pulse_mode(config: Config, events: PersistentQueue, stop: threading.Event) -> None:
     pin = DigitalInputDevice(config.gpio_bcm, pull_up=config.pull_up)
-    last_value = bool(pin.value)
-    last_counted_at = 0.0
+    active_level = config.pulse_edge != "falling"
+    detector = PulseCycleDetector(
+        active_level=active_level,
+        min_active_seconds=config.pulse_min_active_seconds,
+        rearm_seconds=config.pulse_rearm_seconds,
+        max_active_seconds=config.pulse_max_active_seconds,
+        min_interval_seconds=config.pulse_min_interval_seconds,
+    )
     print(
-        f"pulse polling started edge={config.pulse_edge} initial_value={int(last_value)} poll={config.poll_interval_seconds}s debounce={config.bounce_time}s",
+        "pulse cycle detector started "
+        f"edge={config.pulse_edge} initial_value={int(bool(pin.value))} "
+        f"poll={config.poll_interval_seconds}s min_active={config.pulse_min_active_seconds}s "
+        f"rearm={config.pulse_rearm_seconds}s max_active={config.pulse_max_active_seconds}s "
+        f"min_interval={config.pulse_min_interval_seconds}s",
         flush=True,
     )
     while not stop.is_set():
-        value = bool(pin.value)
-        if value == last_value:
-            stop.wait(config.poll_interval_seconds)
-            continue
-
         now = time.monotonic()
-        is_rising = (not last_value) and value
-        is_falling = last_value and (not value)
-        last_value = value
-
-        if config.bounce_time > 0 and now - last_counted_at < config.bounce_time:
-            print(f"pulse ignored bounce value={int(value)}", flush=True)
-            stop.wait(config.poll_interval_seconds)
-            continue
-
-        should_count = (
-            (config.pulse_edge == "rising" and is_rising)
-            or (config.pulse_edge == "falling" and is_falling)
-            or (config.pulse_edge == "both")
-        )
-        if not should_count:
-            print(f"pulse edge ignored edge={'rising' if is_rising else 'falling'} value={int(value)}", flush=True)
-            stop.wait(config.poll_interval_seconds)
-            continue
-
-        last_counted_at = now
-        enqueue_measurement(
-            config,
-            events,
-            delta=1.0,
-            extra={
-                "pulse": {
-                    "edge": "rising" if is_rising else "falling",
-                    "value": int(value),
-                }
-            },
-        )
+        result = detector.feed(bool(pin.value), now)
+        if result and result.get("accepted"):
+            enqueue_measurement(
+                config,
+                events,
+                delta=1.0,
+                extra={
+                    "pulse": {
+                        "edge": config.pulse_edge,
+                        "active_seconds": round(result["active_seconds"], 4),
+                        "validated_cycle": True,
+                    }
+                },
+            )
+        elif result:
+            print(
+                f"pulse ignored reason={result['reason']} active={result['active_seconds']:.4f}s",
+                flush=True,
+            )
+        stop.wait(config.poll_interval_seconds)
 
 
 def run_duration_mode(config: Config, events: PersistentQueue, stop: threading.Event) -> None:
