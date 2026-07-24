@@ -48,7 +48,7 @@ env_quote() {
 }
 
 write_env_file() {
-  local crm_url device_token gpio_bcm pull_up bounce poll_interval pulse_edge pulse_min_active pulse_rearm pulse_max_active pulse_min_interval mode duration_unit min_duration station_code line_id operator_id note
+  local crm_url device_token gpio_bcm pull_up bounce poll_interval pulse_edge pulse_min_active pulse_rearm pulse_max_active pulse_min_interval mode duration_unit min_duration duration_active_level duration_start_stable duration_stop_stable station_code line_id operator_id note
 
   crm_url="$(ask_default "CRM adresi" "$(current_env_value UDAR_CRM_URL || true)")"
   crm_url="${crm_url:-https://crm.aykadoor.com}"
@@ -85,6 +85,12 @@ write_env_file() {
     duration_unit="seconds"
     min_duration="$(ask_default "En kisa sayilacak sure saniye" "$(current_env_value UDAR_MIN_DURATION_SECONDS || true)")"
     min_duration="${min_duration:-0.2}"
+    duration_active_level="$(ask_default "Makine calisirken pin seviyesi high/low" "$(current_env_value UDAR_DURATION_ACTIVE_LEVEL || true)")"
+    duration_active_level="${duration_active_level:-high}"
+    duration_start_stable="$(ask_default "Baslangic sinyalinin kararlilik suresi (sn)" "$(current_env_value UDAR_DURATION_START_STABLE_SECONDS || true)")"
+    duration_start_stable="${duration_start_stable:-0.20}"
+    duration_stop_stable="$(ask_default "Bitis sinyalinin kararlilik suresi (sn)" "$(current_env_value UDAR_DURATION_STOP_STABLE_SECONDS || true)")"
+    duration_stop_stable="${duration_stop_stable:-0.20}"
     note="$(ask_default "Not" "$(current_env_value UDAR_NOTE || true)")"
     note="${note:-GPIO${gpio_bcm} sure olcumu}"
   else
@@ -132,6 +138,9 @@ UDAR_PULSE_MAX_ACTIVE_SECONDS=${pulse_max_active:-10.0}
 UDAR_PULSE_MIN_INTERVAL_SECONDS=${pulse_min_interval:-0.20}
 UDAR_DURATION_UNIT=$duration_unit
 UDAR_MIN_DURATION_SECONDS=$min_duration
+UDAR_DURATION_ACTIVE_LEVEL=${duration_active_level:-high}
+UDAR_DURATION_START_STABLE_SECONDS=${duration_start_stable:-0.20}
+UDAR_DURATION_STOP_STABLE_SECONDS=${duration_stop_stable:-0.20}
 UDAR_DAILY_RESET=true
 
 UDAR_LINE_ID=$line_id

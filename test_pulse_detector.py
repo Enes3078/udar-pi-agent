@@ -12,7 +12,7 @@ gpiozero_module = types.ModuleType("gpiozero")
 gpiozero_module.DigitalInputDevice = object
 sys.modules.setdefault("gpiozero", gpiozero_module)
 
-from udar_pi_agent import PulseCycleDetector
+from udar_pi_agent import DurationCycleDetector, PulseCycleDetector
 
 
 class PulseCycleDetectorTests(unittest.TestCase):
@@ -67,6 +67,46 @@ class PulseCycleDetectorTests(unittest.TestCase):
         result = detector.feed(False, 3.3)
         self.assertFalse(result["accepted"])
         self.assertEqual(result["reason"], "active_too_long")
+
+
+class DurationCycleDetectorTests(unittest.TestCase):
+    def detector(self):
+        return DurationCycleDetector(
+            active_level=True,
+            start_stable_seconds=0.20,
+            stop_stable_seconds=0.20,
+        )
+
+    def test_chatter_does_not_start_or_stop(self):
+        detector = self.detector()
+        detector.feed(False, 0.0)
+        detector.feed(True, 0.10)
+        detector.feed(False, 0.15)
+        detector.feed(True, 0.20)
+        detector.feed(False, 0.25)
+        self.assertIsNone(detector.feed(False, 0.50))
+
+    def test_stable_interval_is_reported_once(self):
+        detector = self.detector()
+        detector.feed(False, 0.0)
+        detector.feed(True, 1.0)
+        started = detector.feed(True, 1.21)
+        self.assertEqual(started["event"], "started")
+        detector.feed(False, 11.0)
+        stopped = detector.feed(False, 11.21)
+        self.assertEqual(stopped["event"], "stopped")
+        self.assertAlmostEqual(stopped["elapsed_seconds"], 10.0)
+        self.assertIsNone(detector.feed(False, 12.0))
+
+    def test_starting_high_requires_inactive_baseline(self):
+        detector = self.detector()
+        detector.feed(True, 0.0)
+        detector.feed(True, 1.0)
+        detector.feed(False, 2.0)
+        self.assertIsNone(detector.feed(False, 2.21))
+        detector.feed(True, 3.0)
+        started = detector.feed(True, 3.21)
+        self.assertEqual(started["event"], "started")
 
 
 if __name__ == "__main__":

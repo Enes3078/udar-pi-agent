@@ -62,6 +62,9 @@ class Config:
     pulse_min_interval_seconds: float = 0.20
     duration_unit: str = "seconds"
     min_duration_seconds: float = 0.2
+    duration_start_stable_seconds: float = 0.20
+    duration_stop_stable_seconds: float = 0.20
+    duration_active_level: str = "high"
     daily_reset: bool = True
     line_id: str = ""
     station_code: str = ""
@@ -87,6 +90,9 @@ def load_config() -> Config:
     unit = env("UDAR_DURATION_UNIT", "seconds").lower()
     if unit not in {"seconds", "minutes"}:
         raise SystemExit("UDAR_DURATION_UNIT must be seconds or minutes")
+    duration_active_level = env("UDAR_DURATION_ACTIVE_LEVEL", "high").lower()
+    if duration_active_level not in {"high", "low"}:
+        raise SystemExit("UDAR_DURATION_ACTIVE_LEVEL must be high or low")
     return Config(
         crm_url=crm_url,
         device_token=token,
@@ -104,6 +110,9 @@ def load_config() -> Config:
         pulse_min_interval_seconds=float(env("UDAR_PULSE_MIN_INTERVAL_SECONDS", "0.20")),
         duration_unit=unit,
         min_duration_seconds=float(env("UDAR_MIN_DURATION_SECONDS", "0.2")),
+        duration_start_stable_seconds=float(env("UDAR_DURATION_START_STABLE_SECONDS", "0.20")),
+        duration_stop_stable_seconds=float(env("UDAR_DURATION_STOP_STABLE_SECONDS", "0.20")),
+        duration_active_level=duration_active_level,
         daily_reset=bool_env("UDAR_DAILY_RESET", "true"),
         line_id=env("UDAR_LINE_ID"),
         station_code=env("UDAR_STATION_CODE"),
@@ -423,6 +432,72 @@ class PulseCycleDetector:
         }
 
 
+class DurationCycleDetector:
+    """Measure only stable active intervals after an inactive baseline."""
+
+    def __init__(
+        self,
+        *,
+        active_level: bool,
+        start_stable_seconds: float,
+        stop_stable_seconds: float,
+    ):
+        self.active_level = active_level
+        self.start_stable_seconds = max(0.0, start_stable_seconds)
+        self.stop_stable_seconds = max(0.0, stop_stable_seconds)
+        self.stable_value: bool | None = None
+        self.candidate_value: bool | None = None
+        self.candidate_since = 0.0
+        self.armed = False
+        self.active_started_at: float | None = None
+
+    def feed(self, value: bool, now: float) -> dict[str, Any] | None:
+        value = bool(value)
+        if self.stable_value is None:
+            self.stable_value = value
+            self.candidate_value = value
+            self.candidate_since = now
+            self.armed = value != self.active_level
+            return None
+
+        if value != self.candidate_value:
+            self.candidate_value = value
+            self.candidate_since = now
+            return None
+
+        if value == self.stable_value:
+            return None
+
+        required_stable = (
+            self.start_stable_seconds
+            if value == self.active_level
+            else self.stop_stable_seconds
+        )
+        if now - self.candidate_since < required_stable:
+            return None
+
+        previous = self.stable_value
+        self.stable_value = value
+        if value == self.active_level:
+            if self.armed and previous != self.active_level:
+                self.active_started_at = self.candidate_since
+                self.armed = False
+                return {"event": "started", "started_at": self.active_started_at}
+            return None
+
+        self.armed = True
+        if previous != self.active_level or self.active_started_at is None:
+            return None
+        started_at = self.active_started_at
+        self.active_started_at = None
+        return {
+            "event": "stopped",
+            "started_at": started_at,
+            "ended_at": self.candidate_since,
+            "elapsed_seconds": max(0.0, self.candidate_since - started_at),
+        }
+
+
 def run_pulse_mode(config: Config, events: PersistentQueue, stop: threading.Event) -> None:
     pin = DigitalInputDevice(config.gpio_bcm, pull_up=config.pull_up)
     active_level = config.pulse_edge != "falling"
@@ -467,46 +542,49 @@ def run_pulse_mode(config: Config, events: PersistentQueue, stop: threading.Even
 
 def run_duration_mode(config: Config, events: PersistentQueue, stop: threading.Event) -> None:
     pin = DigitalInputDevice(config.gpio_bcm, pull_up=config.pull_up)
-    started_monotonic: float | None = None
-    started_at: str | None = None
-    last_value = bool(pin.value)
-    if last_value:
-        started_monotonic = time.monotonic()
-        started_at = datetime.now(timezone.utc).isoformat()
-        print("duration started", flush=True)
+    active_level = config.duration_active_level == "high"
+    detector = DurationCycleDetector(
+        active_level=active_level,
+        start_stable_seconds=config.duration_start_stable_seconds,
+        stop_stable_seconds=config.duration_stop_stable_seconds,
+    )
+    started_at_utc: str | None = None
+    print(
+        "duration cycle detector started "
+        f"active_level={config.duration_active_level} initial_value={int(bool(pin.value))} "
+        f"start_stable={config.duration_start_stable_seconds}s "
+        f"stop_stable={config.duration_stop_stable_seconds}s",
+        flush=True,
+    )
     while not stop.is_set():
-        value = bool(pin.value)
-        if value == last_value:
-            stop.wait(0.05)
-            continue
-        last_value = value
-        if value and started_monotonic is None:
-            started_monotonic = time.monotonic()
-            started_at = datetime.now(timezone.utc).isoformat()
+        result = detector.feed(bool(pin.value), time.monotonic())
+        if result and result["event"] == "started":
+            started_at_utc = datetime.now(timezone.utc).isoformat()
             print("duration started", flush=True)
-        elif not value and started_monotonic is not None:
-            now = time.monotonic()
-            elapsed = max(0.0, now - started_monotonic)
+        elif result and result["event"] == "stopped":
+            elapsed = result["elapsed_seconds"]
             ended_at = datetime.now(timezone.utc).isoformat()
-            started_monotonic = None
             if elapsed < config.min_duration_seconds:
                 print(f"duration ignored elapsed={elapsed:.3f}s", flush=True)
-                continue
-            delta = elapsed if config.duration_unit == "seconds" else elapsed / 60.0
-            enqueue_measurement(
-                config,
-                events,
-                delta=delta,
-                extra={
-                    "duration": {
-                        "started_at": started_at,
-                        "ended_at": ended_at,
-                        "seconds": round(elapsed, 2),
-                        "is_final_chunk": True,
-                    }
-                },
-            )
-            print(f"duration stopped total_elapsed={elapsed:.3f}s", flush=True)
+            else:
+                delta = elapsed if config.duration_unit == "seconds" else elapsed / 60.0
+                enqueue_measurement(
+                    config,
+                    events,
+                    delta=delta,
+                    extra={
+                        "duration": {
+                            "started_at": started_at_utc,
+                            "ended_at": ended_at,
+                            "seconds": round(elapsed, 2),
+                            "is_final_chunk": True,
+                            "validated_cycle": True,
+                        }
+                    },
+                )
+                print(f"duration stopped total_elapsed={elapsed:.3f}s", flush=True)
+            started_at_utc = None
+        stop.wait(config.poll_interval_seconds)
 
 
 def main() -> int:
