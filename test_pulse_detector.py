@@ -89,6 +89,7 @@ class DurationCycleDetectorTests(unittest.TestCase):
     def test_stable_interval_is_reported_once(self):
         detector = self.detector()
         detector.feed(False, 0.0)
+        detector.feed(False, 0.3)
         detector.feed(True, 1.0)
         started = detector.feed(True, 1.21)
         self.assertEqual(started["event"], "started")

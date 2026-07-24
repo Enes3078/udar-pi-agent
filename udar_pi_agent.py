@@ -457,7 +457,7 @@ class DurationCycleDetector:
             self.stable_value = value
             self.candidate_value = value
             self.candidate_since = now
-            self.armed = value != self.active_level
+            self.armed = False
             return None
 
         if value != self.candidate_value:
@@ -466,6 +466,13 @@ class DurationCycleDetector:
             return None
 
         if value == self.stable_value:
+            if (
+                value != self.active_level
+                and not self.armed
+                and self.active_started_at is None
+                and now - self.candidate_since >= self.stop_stable_seconds
+            ):
+                self.armed = True
             return None
 
         required_stable = (
