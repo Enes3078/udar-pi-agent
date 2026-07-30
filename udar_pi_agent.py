@@ -65,6 +65,7 @@ class Config:
     duration_start_stable_seconds: float = 0.20
     duration_stop_stable_seconds: float = 0.20
     duration_dropout_grace_seconds: float = 1.50
+    duration_dropout_log_interval_seconds: float = 30.0
     duration_active_level: str = "high"
     daily_reset: bool = True
     line_id: str = ""
@@ -114,6 +115,9 @@ def load_config() -> Config:
         duration_start_stable_seconds=float(env("UDAR_DURATION_START_STABLE_SECONDS", "0.20")),
         duration_stop_stable_seconds=float(env("UDAR_DURATION_STOP_STABLE_SECONDS", "0.20")),
         duration_dropout_grace_seconds=float(env("UDAR_DURATION_DROPOUT_GRACE_SECONDS", "1.50")),
+        duration_dropout_log_interval_seconds=float(
+            env("UDAR_DURATION_DROPOUT_LOG_INTERVAL_SECONDS", "30.0")
+        ),
         duration_active_level=duration_active_level,
         daily_reset=bool_env("UDAR_DAILY_RESET", "true"),
         line_id=env("UDAR_LINE_ID"),
@@ -586,6 +590,26 @@ def run_duration_mode(config: Config, events: PersistentQueue, stop: threading.E
         dropout_grace_seconds=config.duration_dropout_grace_seconds,
     )
     started_at_utc: str | None = None
+    dropout_log_count = 0
+    dropout_log_seconds = 0.0
+    last_dropout_log_at = 0.0
+
+    def flush_dropout_log(now: float, *, force: bool = False) -> None:
+        nonlocal dropout_log_count, dropout_log_seconds, last_dropout_log_at
+        if not dropout_log_count:
+            return
+        log_interval = max(1.0, config.duration_dropout_log_interval_seconds)
+        if not force and last_dropout_log_at and now - last_dropout_log_at < log_interval:
+            return
+        print(
+            "duration input noise filtered "
+            f"count={dropout_log_count} low_total={dropout_log_seconds:.3f}s",
+            flush=True,
+        )
+        dropout_log_count = 0
+        dropout_log_seconds = 0.0
+        last_dropout_log_at = now
+
     print(
         "duration cycle detector started "
         f"active_level={config.duration_active_level} initial_value={int(bool(pin.value))} "
@@ -595,16 +619,17 @@ def run_duration_mode(config: Config, events: PersistentQueue, stop: threading.E
         flush=True,
     )
     while not stop.is_set():
-        result = detector.feed(bool(pin.value), time.monotonic())
+        now = time.monotonic()
+        result = detector.feed(bool(pin.value), now)
         if result and result["event"] == "started":
             started_at_utc = datetime.now(timezone.utc).isoformat()
             print("duration started", flush=True)
         elif result and result["event"] == "dropout_ignored":
-            print(
-                f"duration dropout ignored low={result['dropout_seconds']:.3f}s",
-                flush=True,
-            )
+            dropout_log_count += 1
+            dropout_log_seconds += result["dropout_seconds"]
+            flush_dropout_log(now)
         elif result and result["event"] == "stopped":
+            flush_dropout_log(now, force=True)
             elapsed = result["elapsed_seconds"]
             ended_at = datetime.now(timezone.utc).isoformat()
             if elapsed < config.min_duration_seconds:
@@ -631,6 +656,7 @@ def run_duration_mode(config: Config, events: PersistentQueue, stop: threading.E
                 print(f"duration stopped total_elapsed={elapsed:.3f}s", flush=True)
             started_at_utc = None
         stop.wait(config.poll_interval_seconds)
+    flush_dropout_log(time.monotonic(), force=True)
 
 
 def main() -> int:

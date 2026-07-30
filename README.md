@@ -151,6 +151,7 @@ UDAR_DURATION_ACTIVE_LEVEL=high
 UDAR_DURATION_START_STABLE_SECONDS=0.20
 UDAR_DURATION_STOP_STABLE_SECONDS=0.20
 UDAR_DURATION_DROPOUT_GRACE_SECONDS=1.50
+UDAR_DURATION_DROPOUT_LOG_INTERVAL_SECONDS=30
 UDAR_POLL_INTERVAL_SECONDS=0.002
 UDAR_BOUNCE_SECONDS=0.005
 UDAR_DAILY_RESET=true
@@ -166,7 +167,8 @@ GPIO kısa süre `0` olup `UDAR_DURATION_DROPOUT_GRACE_SECONDS` dolmadan tekrar
 periyodunu ölçmeye devam eder. Sinyal bu süre boyunca kesintisiz `0` kalırsa
 gerçek duruş kabul edilir. Lazer için önerilen başlangıç değeri `1.50`
 saniyedir. Yok sayılan kopmalar `journalctl` içinde
-`duration dropout ignored` satırıyla görünür.
+30 saniyede bir `duration input noise filtered` özeti olarak görünür; her
+elektriksel kopma için ayrı log satırı üretilmez.
 
 ## GPIO Testi
 
