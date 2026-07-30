@@ -64,6 +64,7 @@ class Config:
     min_duration_seconds: float = 0.2
     duration_start_stable_seconds: float = 0.20
     duration_stop_stable_seconds: float = 0.20
+    duration_dropout_grace_seconds: float = 1.50
     duration_active_level: str = "high"
     daily_reset: bool = True
     line_id: str = ""
@@ -112,6 +113,7 @@ def load_config() -> Config:
         min_duration_seconds=float(env("UDAR_MIN_DURATION_SECONDS", "0.2")),
         duration_start_stable_seconds=float(env("UDAR_DURATION_START_STABLE_SECONDS", "0.20")),
         duration_stop_stable_seconds=float(env("UDAR_DURATION_STOP_STABLE_SECONDS", "0.20")),
+        duration_dropout_grace_seconds=float(env("UDAR_DURATION_DROPOUT_GRACE_SECONDS", "1.50")),
         duration_active_level=duration_active_level,
         daily_reset=bool_env("UDAR_DAILY_RESET", "true"),
         line_id=env("UDAR_LINE_ID"),
@@ -441,15 +443,23 @@ class DurationCycleDetector:
         active_level: bool,
         start_stable_seconds: float,
         stop_stable_seconds: float,
+        dropout_grace_seconds: float = 0.0,
     ):
         self.active_level = active_level
         self.start_stable_seconds = max(0.0, start_stable_seconds)
         self.stop_stable_seconds = max(0.0, stop_stable_seconds)
+        self.dropout_grace_seconds = max(0.0, dropout_grace_seconds)
         self.stable_value: bool | None = None
         self.candidate_value: bool | None = None
         self.candidate_since = 0.0
         self.armed = False
         self.active_started_at: float | None = None
+        self.ignored_dropout_count = 0
+        self.ignored_dropout_seconds = 0.0
+
+    @property
+    def required_stop_seconds(self) -> float:
+        return max(self.stop_stable_seconds, self.dropout_grace_seconds)
 
     def feed(self, value: bool, now: float) -> dict[str, Any] | None:
         value = bool(value)
@@ -461,16 +471,31 @@ class DurationCycleDetector:
             return None
 
         if value != self.candidate_value:
+            ignored_dropout: dict[str, Any] | None = None
+            if (
+                self.stable_value == self.active_level
+                and self.active_started_at is not None
+                and self.candidate_value != self.active_level
+                and value == self.active_level
+            ):
+                dropout_seconds = max(0.0, now - self.candidate_since)
+                if dropout_seconds < self.required_stop_seconds:
+                    self.ignored_dropout_count += 1
+                    self.ignored_dropout_seconds += dropout_seconds
+                    ignored_dropout = {
+                        "event": "dropout_ignored",
+                        "dropout_seconds": dropout_seconds,
+                    }
             self.candidate_value = value
             self.candidate_since = now
-            return None
+            return ignored_dropout
 
         if value == self.stable_value:
             if (
                 value != self.active_level
                 and not self.armed
                 and self.active_started_at is None
-                and now - self.candidate_since >= self.stop_stable_seconds
+                and now - self.candidate_since >= self.required_stop_seconds
             ):
                 self.armed = True
             return None
@@ -478,7 +503,7 @@ class DurationCycleDetector:
         required_stable = (
             self.start_stable_seconds
             if value == self.active_level
-            else self.stop_stable_seconds
+            else self.required_stop_seconds
         )
         if now - self.candidate_since < required_stable:
             return None
@@ -489,6 +514,8 @@ class DurationCycleDetector:
             if self.armed and previous != self.active_level:
                 self.active_started_at = self.candidate_since
                 self.armed = False
+                self.ignored_dropout_count = 0
+                self.ignored_dropout_seconds = 0.0
                 return {"event": "started", "started_at": self.active_started_at}
             return None
 
@@ -502,6 +529,8 @@ class DurationCycleDetector:
             "started_at": started_at,
             "ended_at": self.candidate_since,
             "elapsed_seconds": max(0.0, self.candidate_since - started_at),
+            "ignored_dropout_count": self.ignored_dropout_count,
+            "ignored_dropout_seconds": self.ignored_dropout_seconds,
         }
 
 
@@ -554,13 +583,15 @@ def run_duration_mode(config: Config, events: PersistentQueue, stop: threading.E
         active_level=active_level,
         start_stable_seconds=config.duration_start_stable_seconds,
         stop_stable_seconds=config.duration_stop_stable_seconds,
+        dropout_grace_seconds=config.duration_dropout_grace_seconds,
     )
     started_at_utc: str | None = None
     print(
         "duration cycle detector started "
         f"active_level={config.duration_active_level} initial_value={int(bool(pin.value))} "
         f"start_stable={config.duration_start_stable_seconds}s "
-        f"stop_stable={config.duration_stop_stable_seconds}s",
+        f"stop_stable={config.duration_stop_stable_seconds}s "
+        f"dropout_grace={config.duration_dropout_grace_seconds}s",
         flush=True,
     )
     while not stop.is_set():
@@ -568,6 +599,11 @@ def run_duration_mode(config: Config, events: PersistentQueue, stop: threading.E
         if result and result["event"] == "started":
             started_at_utc = datetime.now(timezone.utc).isoformat()
             print("duration started", flush=True)
+        elif result and result["event"] == "dropout_ignored":
+            print(
+                f"duration dropout ignored low={result['dropout_seconds']:.3f}s",
+                flush=True,
+            )
         elif result and result["event"] == "stopped":
             elapsed = result["elapsed_seconds"]
             ended_at = datetime.now(timezone.utc).isoformat()
@@ -586,6 +622,9 @@ def run_duration_mode(config: Config, events: PersistentQueue, stop: threading.E
                             "seconds": round(elapsed, 2),
                             "is_final_chunk": True,
                             "validated_cycle": True,
+                            "ignored_dropout_count": result["ignored_dropout_count"],
+                            "ignored_dropout_seconds": round(result["ignored_dropout_seconds"], 3),
+                            "dropout_grace_seconds": config.duration_dropout_grace_seconds,
                         }
                     },
                 )

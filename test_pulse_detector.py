@@ -75,6 +75,7 @@ class DurationCycleDetectorTests(unittest.TestCase):
             active_level=True,
             start_stable_seconds=0.20,
             stop_stable_seconds=0.20,
+            dropout_grace_seconds=0.20,
         )
 
     def test_chatter_does_not_start_or_stop(self):
@@ -108,6 +109,47 @@ class DurationCycleDetectorTests(unittest.TestCase):
         detector.feed(True, 3.0)
         started = detector.feed(True, 3.21)
         self.assertEqual(started["event"], "started")
+
+    def test_short_low_dropout_does_not_split_duration(self):
+        detector = DurationCycleDetector(
+            active_level=True,
+            start_stable_seconds=0.20,
+            stop_stable_seconds=0.20,
+            dropout_grace_seconds=1.50,
+        )
+        detector.feed(False, 0.0)
+        detector.feed(False, 1.6)
+        detector.feed(True, 2.0)
+        self.assertEqual(detector.feed(True, 2.21)["event"], "started")
+
+        detector.feed(False, 5.0)
+        self.assertIsNone(detector.feed(False, 5.5))
+        ignored = detector.feed(True, 5.6)
+        self.assertEqual(ignored["event"], "dropout_ignored")
+        self.assertAlmostEqual(ignored["dropout_seconds"], 0.6)
+
+        detector.feed(False, 10.0)
+        stopped = detector.feed(False, 11.51)
+        self.assertEqual(stopped["event"], "stopped")
+        self.assertAlmostEqual(stopped["elapsed_seconds"], 8.0)
+        self.assertEqual(stopped["ignored_dropout_count"], 1)
+        self.assertAlmostEqual(stopped["ignored_dropout_seconds"], 0.6)
+
+    def test_low_longer_than_grace_is_real_stop(self):
+        detector = DurationCycleDetector(
+            active_level=True,
+            start_stable_seconds=0.20,
+            stop_stable_seconds=0.20,
+            dropout_grace_seconds=1.50,
+        )
+        detector.feed(False, 0.0)
+        detector.feed(False, 1.6)
+        detector.feed(True, 2.0)
+        detector.feed(True, 2.21)
+        detector.feed(False, 5.0)
+        stopped = detector.feed(False, 6.51)
+        self.assertEqual(stopped["event"], "stopped")
+        self.assertAlmostEqual(stopped["elapsed_seconds"], 3.0)
 
 
 if __name__ == "__main__":
