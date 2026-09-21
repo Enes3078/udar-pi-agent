@@ -259,6 +259,7 @@ class EnvTests(unittest.TestCase):
     ANAHTARLAR = (
         "UDAR_POLL_INTERVAL_SECONDS", "UDAR_SEND_RETRY_BASE_SECONDS",
         "UDAR_DURATION_DROPOUT_GRACE_SECONDS", "UDAR_QUEUE_DB", "UDAR_MEASUREMENT_MODE",
+        "UDAR_BOUNCE_SECONDS",
     )
 
     def setUp(self):
@@ -285,3 +286,18 @@ class EnvTests(unittest.TestCase):
         self.assertEqual(config.duration_dropout_grace_seconds, 1.50)
         self.assertEqual(str(config.queue_db), "/var/lib/udar-pi-agent/machine_events.sqlite3")
         self.assertEqual(config.measurement_mode, "pulse")
+
+    def test_bozuk_sayi_traceback_degil_ne_yapilacagini_soyler(self):
+        # 2026-09-21 saha arizasi: tek satirlik kurulumda sihirbaz betigin kendi
+        # satirlarini cevap sandi ve bu degeri yazdi; ajan her acilista traceback
+        # verip coktu. Artik ayarin adini ve duzeltme komutunu soyluyor.
+        from udar_pi_agent import load_config
+        self._os.environ["UDAR_BOUNCE_SECONDS"] = 'echo "  sudo systemctl restart udar-pi-agent"'
+        try:
+            with self.assertRaises(SystemExit) as ctx:
+                load_config()
+        finally:
+            self._os.environ.pop("UDAR_BOUNCE_SECONDS", None)
+        mesaj = str(ctx.exception.code)
+        self.assertIn("UDAR_BOUNCE_SECONDS", mesaj)
+        self.assertIn("install.sh --configure", mesaj)

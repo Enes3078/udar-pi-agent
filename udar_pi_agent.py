@@ -49,6 +49,34 @@ def env(name: str, default: str = "") -> str:
     return value if value else default
 
 
+ENV_DOSYASI = "/etc/udar-pi-agent.env"
+
+
+def _sayi_hatasi(name: str, value: str, beklenen: str) -> SystemExit:
+    return SystemExit(
+        f"AYAR HATASI: {ENV_DOSYASI} icinde {name} {beklenen} olmali, su an: {value!r}\n"
+        f"Duzeltmek icin Pi'nin terminalinde:  cd ~/udar-pi-agent && bash install.sh --configure\n"
+        f"ya da elle:  sudo nano {ENV_DOSYASI}"
+    )
+
+
+def float_env(name: str, default: str) -> float:
+    """Sayi ayari. Bozuk deger TRACEBACK ile degil, ne yapilacagini soyleyen mesajla durur."""
+    value = env(name, default)
+    try:
+        return float(value)
+    except ValueError:
+        raise _sayi_hatasi(name, value, "sayi (ornek: " + default + ")") from None
+
+
+def int_env(name: str, default: str) -> int:
+    value = env(name, default)
+    try:
+        return int(value)
+    except ValueError:
+        raise _sayi_hatasi(name, value, "tam sayi (ornek: " + default + ")") from None
+
+
 def bool_env(name: str, default: str = "false") -> bool:
     return env(name, default).lower() in {"1", "true", "yes", "on"}
 
@@ -110,23 +138,23 @@ def load_config() -> Config:
     return Config(
         crm_url=crm_url,
         device_token=token,
-        gpio_bcm=int(env("UDAR_GPIO_BCM", "17")),
-        bounce_time=float(env("UDAR_BOUNCE_SECONDS", "0.05")),
+        gpio_bcm=int_env("UDAR_GPIO_BCM", "17"),
+        bounce_time=float_env("UDAR_BOUNCE_SECONDS", "0.05"),
         pull_up=bool_env("UDAR_PULL_UP"),
-        timeout=float(env("UDAR_HTTP_TIMEOUT", "5")),
+        timeout=float_env("UDAR_HTTP_TIMEOUT", "5"),
         queue_db=Path(env("UDAR_QUEUE_DB", "/var/lib/udar-pi-agent/machine_events.sqlite3")),
         measurement_mode=mode,
         pulse_edge=pulse_edge,
-        poll_interval_seconds=float(env("UDAR_POLL_INTERVAL_SECONDS", "0.002")),
-        pulse_min_active_seconds=float(env("UDAR_PULSE_MIN_ACTIVE_SECONDS", "0.02")),
-        pulse_rearm_seconds=float(env("UDAR_PULSE_REARM_SECONDS", "0.20")),
-        pulse_max_active_seconds=float(env("UDAR_PULSE_MAX_ACTIVE_SECONDS", "10.0")),
-        pulse_min_interval_seconds=float(env("UDAR_PULSE_MIN_INTERVAL_SECONDS", "0.20")),
+        poll_interval_seconds=float_env("UDAR_POLL_INTERVAL_SECONDS", "0.002"),
+        pulse_min_active_seconds=float_env("UDAR_PULSE_MIN_ACTIVE_SECONDS", "0.02"),
+        pulse_rearm_seconds=float_env("UDAR_PULSE_REARM_SECONDS", "0.20"),
+        pulse_max_active_seconds=float_env("UDAR_PULSE_MAX_ACTIVE_SECONDS", "10.0"),
+        pulse_min_interval_seconds=float_env("UDAR_PULSE_MIN_INTERVAL_SECONDS", "0.20"),
         duration_unit=unit,
-        min_duration_seconds=float(env("UDAR_MIN_DURATION_SECONDS", "0.2")),
-        duration_start_stable_seconds=float(env("UDAR_DURATION_START_STABLE_SECONDS", "0.20")),
-        duration_stop_stable_seconds=float(env("UDAR_DURATION_STOP_STABLE_SECONDS", "0.20")),
-        duration_dropout_grace_seconds=float(env("UDAR_DURATION_DROPOUT_GRACE_SECONDS", "1.50")),
+        min_duration_seconds=float_env("UDAR_MIN_DURATION_SECONDS", "0.2"),
+        duration_start_stable_seconds=float_env("UDAR_DURATION_START_STABLE_SECONDS", "0.20"),
+        duration_stop_stable_seconds=float_env("UDAR_DURATION_STOP_STABLE_SECONDS", "0.20"),
+        duration_dropout_grace_seconds=float_env("UDAR_DURATION_DROPOUT_GRACE_SECONDS", "1.50"),
         duration_dropout_log_interval_seconds=float(
             env("UDAR_DURATION_DROPOUT_LOG_INTERVAL_SECONDS", "30.0")
         ),
@@ -136,9 +164,9 @@ def load_config() -> Config:
         station_code=env("UDAR_STATION_CODE"),
         operator_id=env("UDAR_OPERATOR_ID"),
         note=env("UDAR_NOTE", "GPIO event"),
-        send_retry_base_seconds=float(env("UDAR_SEND_RETRY_BASE_SECONDS", "5")),
-        send_retry_validation_seconds=float(env("UDAR_SEND_RETRY_VALIDATION_SECONDS", "60")),
-        send_retry_max_seconds=float(env("UDAR_SEND_RETRY_MAX_SECONDS", "300")),
+        send_retry_base_seconds=float_env("UDAR_SEND_RETRY_BASE_SECONDS", "5"),
+        send_retry_validation_seconds=float_env("UDAR_SEND_RETRY_VALIDATION_SECONDS", "60"),
+        send_retry_max_seconds=float_env("UDAR_SEND_RETRY_MAX_SECONDS", "300"),
     )
 
 

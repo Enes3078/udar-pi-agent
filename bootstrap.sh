@@ -28,7 +28,20 @@ fi
 
 cd "$TARGET_DIR"
 chmod +x install.sh update.sh diagnose_gpio.py
-bash install.sh --configure
+
+# Bu betik genelde `wget -qO- ... | bash` ile calisir; o durumda stdin BU
+# BETIGIN KENDISIDIR. Sihirbaz stdin'den okursa soru sormadan betigin kalan
+# satirlarini cevap sanar (2026-09-21 saha arizasi). Sihirbaz bu yuzden
+# kullanicinin terminaline baglanir. Terminal yoksa (otomatik kurulum) SORMADAN
+# kurulur ve ne yapilacagi yazilir — yarim/cop ayarla ajan baslatilmaz.
+if [ -r /dev/tty ] && [ -w /dev/tty ]; then
+  bash install.sh --configure </dev/tty
+else
+  bash install.sh --no-config
+  echo
+  echo "[UDAR] Terminal bulunamadi; ayar sorulmadi."
+  echo "[UDAR] Ayarlamak icin Pi'nin terminalinde:  cd $TARGET_DIR && bash install.sh --configure"
+fi
 
 echo
 echo "[UDAR] Kurulum tamamlandi."
