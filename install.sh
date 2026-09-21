@@ -121,6 +121,15 @@ write_env_file() {
   line_id="$(ask_default "Is emri satir ID (genelde bos birak)" "$(current_env_value UDAR_LINE_ID || true)")"
   operator_id="$(ask_default "Operator ID (genelde bos birak)" "$(current_env_value UDAR_OPERATOR_ID || true)")"
 
+  # Sihirbazin sormadigi ayarlar: mevcut deger korunur, yoksa ondeger yazilir.
+  # BOS YAZILMAZ — eski ajan surumleri bos degeri float("") ile okuyup coker.
+  local dropout_grace dropout_log retry_base retry_validation retry_max
+  dropout_grace="$(current_env_value UDAR_DURATION_DROPOUT_GRACE_SECONDS || true)"; dropout_grace="${dropout_grace:-1.50}"
+  dropout_log="$(current_env_value UDAR_DURATION_DROPOUT_LOG_INTERVAL_SECONDS || true)"; dropout_log="${dropout_log:-30}"
+  retry_base="$(current_env_value UDAR_SEND_RETRY_BASE_SECONDS || true)"; retry_base="${retry_base:-5}"
+  retry_validation="$(current_env_value UDAR_SEND_RETRY_VALIDATION_SECONDS || true)"; retry_validation="${retry_validation:-60}"
+  retry_max="$(current_env_value UDAR_SEND_RETRY_MAX_SECONDS || true)"; retry_max="${retry_max:-300}"
+
   sudo tee "$ENV_FILE" >/dev/null <<EOF
 UDAR_CRM_URL=$crm_url
 UDAR_DEVICE_TOKEN=$device_token
@@ -141,6 +150,8 @@ UDAR_MIN_DURATION_SECONDS=$min_duration
 UDAR_DURATION_ACTIVE_LEVEL=${duration_active_level:-high}
 UDAR_DURATION_START_STABLE_SECONDS=${duration_start_stable:-0.20}
 UDAR_DURATION_STOP_STABLE_SECONDS=${duration_stop_stable:-0.20}
+UDAR_DURATION_DROPOUT_GRACE_SECONDS=$dropout_grace
+UDAR_DURATION_DROPOUT_LOG_INTERVAL_SECONDS=$dropout_log
 UDAR_DAILY_RESET=true
 
 UDAR_LINE_ID=$line_id
@@ -150,6 +161,9 @@ UDAR_OPERATOR_ID=$operator_id
 UDAR_NOTE=$(env_quote "$note")
 UDAR_HTTP_TIMEOUT=5
 UDAR_QUEUE_DB=/var/lib/udar-pi-agent/machine_events.sqlite3
+UDAR_SEND_RETRY_BASE_SECONDS=$retry_base
+UDAR_SEND_RETRY_VALIDATION_SECONDS=$retry_validation
+UDAR_SEND_RETRY_MAX_SECONDS=$retry_max
 EOF
   sudo chmod 600 "$ENV_FILE"
   echo "[UDAR] Env dosyasi guncellendi: $ENV_FILE"

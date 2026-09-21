@@ -405,12 +405,32 @@ sqlite3 /var/lib/udar-pi-agent/machine_events.sqlite3 \
   "select id,status,response_code,created_at,sent_at from event_log order by id desc limit 20;"
 ```
 
-Gönderilemeyen kuyruk:
+Gönderilemeyen kuyruk (`next_attempt_at`: bir sonraki deneme zamanı):
 
 ```bash
 sqlite3 /var/lib/udar-pi-agent/machine_events.sqlite3 \
-  "select id,idempotency_key,attempts,last_error,created_at from events order by id;"
+  "select id,idempotency_key,attempts,last_error,next_attempt_at from events order by id;"
 ```
+
+### Gönderilemeyen kayıt ne olur?
+
+Kayıt kuyrukta **ertelenir**, arkasındaki kayıtlar beklemeden gönderilmeye
+devam eder. Eski sürümde kuyruğun başındaki tek bir reddedilmiş kayıt arkadaki
+bütün kayıtları bloke ediyor ve beklemeden sürekli yeniden deneniyordu.
+
+| Durum | İlk bekleme | Sonra |
+|---|---|---|
+| Ağ kopması, sunucu hatası | 5 sn | her denemede ikiye katlanır |
+| Sunucu "geçersiz kayıt" dedi (400/403/404/409/422) | 60 sn | ikiye katlanır |
+| Hız sınırı (429) | en az 30 sn | ikiye katlanır |
+| Sunucu `Retry-After` gönderdi | o süre | — |
+
+Üst sınır 5 dakika. Ayarlar `/etc/udar-pi-agent.env` içinde:
+`UDAR_SEND_RETRY_BASE_SECONDS`, `UDAR_SEND_RETRY_VALIDATION_SECONDS`,
+`UDAR_SEND_RETRY_MAX_SECONDS`.
+
+Eski sürümden güncellenen Pi'lerde kuyruk dosyası yerinde güncellenir;
+içindeki bekleyen kayıtlar kaybolmaz.
 
 ## Manuel API Testi
 

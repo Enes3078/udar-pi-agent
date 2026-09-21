@@ -21,7 +21,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +37,16 @@ except ImportError as exc:  # pragma: no cover
 
 
 def env(name: str, default: str = "") -> str:
-    return os.environ.get(name, default).strip()
+    """Ortam değişkenini okur; BOŞ değer, anahtar hiç yokmuş gibi öndeğere düşer.
+
+    ``os.environ.get(name, default)`` anahtar varsa ama değeri boşsa öndeğeri
+    değil ``""`` döndürür. Env dosyasında ``UDAR_POLL_INTERVAL_SECONDS=`` gibi
+    boş bırakılmış bir satır, sayısal alanlarda ``float("")`` ile ajanı AÇILIŞTA
+    çökertiyordu; ``UDAR_QUEUE_DB=`` boş kalınca kuyruk dosyası çalışma dizinine
+    düşüyordu. Boş bırakılmış bir ayar "ayarlanmamış" demektir.
+    """
+    value = os.environ.get(name, "").strip()
+    return value if value else default
 
 
 def bool_env(name: str, default: str = "false") -> bool:
@@ -72,6 +81,9 @@ class Config:
     station_code: str = ""
     operator_id: str = ""
     note: str = "GPIO event"
+    send_retry_base_seconds: float = 5.0
+    send_retry_validation_seconds: float = 60.0
+    send_retry_max_seconds: float = 300.0
 
     @property
     def endpoint(self) -> str:
@@ -124,6 +136,9 @@ def load_config() -> Config:
         station_code=env("UDAR_STATION_CODE"),
         operator_id=env("UDAR_OPERATOR_ID"),
         note=env("UDAR_NOTE", "GPIO event"),
+        send_retry_base_seconds=float(env("UDAR_SEND_RETRY_BASE_SECONDS", "5")),
+        send_retry_validation_seconds=float(env("UDAR_SEND_RETRY_VALIDATION_SECONDS", "60")),
+        send_retry_max_seconds=float(env("UDAR_SEND_RETRY_MAX_SECONDS", "300")),
     )
 
 
@@ -173,10 +188,12 @@ class PersistentQueue:
                     payload TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     attempts INTEGER NOT NULL DEFAULT 0,
-                    last_error TEXT NOT NULL DEFAULT ''
+                    last_error TEXT NOT NULL DEFAULT '',
+                    next_attempt_at TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
+            self._ensure_events_column(conn, "next_attempt_at", "TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS event_log (
@@ -202,6 +219,11 @@ class PersistentQueue:
 
     def _connect(self) -> sqlite3.Connection:
         return sqlite3.connect(self.db_path, timeout=30)
+
+    def _ensure_events_column(self, conn: sqlite3.Connection, name: str, definition: str) -> None:
+        columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(events)").fetchall()}
+        if name not in columns:
+            conn.execute(f"ALTER TABLE events ADD COLUMN {name} {definition}")
 
     def get_state(self, key: str, default: str = "") -> str:
         with self.lock, self._connect() as conn:
@@ -237,20 +259,33 @@ class PersistentQueue:
         body = json.dumps(payload, ensure_ascii=False)
         with self.lock, self._connect() as conn:
             conn.execute(
-                "INSERT OR IGNORE INTO events (idempotency_key, payload, created_at) VALUES (?, ?, ?)",
-                (payload["idempotency_key"], body, now),
+                """
+                INSERT OR IGNORE INTO events (idempotency_key, payload, created_at, next_attempt_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (payload["idempotency_key"], body, now, now),
             )
             conn.execute(
                 "INSERT INTO event_log (idempotency_key, payload, status, created_at) VALUES (?, ?, ?, ?)",
                 (payload["idempotency_key"], body, "queued", now),
             )
 
-    def peek(self) -> tuple[int, dict[str, Any]] | None:
+    def peek(self) -> tuple[int, dict[str, Any], int] | None:
+        now = datetime.now(timezone.utc).isoformat()
         with self.lock, self._connect() as conn:
-            row = conn.execute("SELECT id, payload FROM events ORDER BY id LIMIT 1").fetchone()
+            row = conn.execute(
+                """
+                SELECT id, payload, attempts
+                FROM events
+                WHERE next_attempt_at = '' OR next_attempt_at <= ?
+                ORDER BY id
+                LIMIT 1
+                """,
+                (now,),
+            ).fetchone()
         if not row:
             return None
-        return int(row[0]), json.loads(row[1])
+        return int(row[0]), json.loads(row[1]), int(row[2])
 
     def mark_sent(self, row_id: int, payload: dict[str, Any], status_code: int, response_body: str) -> None:
         now = datetime.now(timezone.utc).isoformat()
@@ -272,9 +307,35 @@ class PersistentQueue:
                 ),
             )
 
-    def fail(self, row_id: int, error: str) -> None:
+    def fail(self, row_id: int, error: str, retry_after_seconds: float) -> None:
+        next_attempt_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=max(1.0, retry_after_seconds))
+        ).isoformat()
         with self.lock, self._connect() as conn:
-            conn.execute("UPDATE events SET attempts = attempts + 1, last_error = ? WHERE id = ?", (error[:500], row_id))
+            conn.execute(
+                """
+                UPDATE events
+                SET attempts = attempts + 1, last_error = ?, next_attempt_at = ?
+                WHERE id = ?
+                """,
+                (error[:500], next_attempt_at, row_id),
+            )
+
+
+def retry_delay(config: Config, *, status_code: int | None, attempts: int, retry_after: str = "") -> float:
+    if retry_after:
+        try:
+            return min(config.send_retry_max_seconds, max(1.0, float(retry_after)))
+        except ValueError:
+            pass
+    if status_code in {400, 403, 404, 409, 422}:
+        base = config.send_retry_validation_seconds
+    elif status_code == 429:
+        base = max(config.send_retry_base_seconds, 30.0)
+    else:
+        base = config.send_retry_base_seconds
+    multiplier = 2 ** min(max(0, attempts), 6)
+    return min(config.send_retry_max_seconds, max(1.0, base * multiplier))
 
 
 def build_payload(config: Config, *, sequence: int, delta: float, total: float, measured_at: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -319,7 +380,7 @@ def sender_loop(config: Config, events: PersistentQueue, stop: threading.Event) 
         if not item:
             stop.wait(0.5)
             continue
-        row_id, payload = item
+        row_id, payload, attempts = item
         try:
             response = session.post(config.endpoint, json=payload, timeout=config.timeout)
             if 200 <= response.status_code < 300:
@@ -327,13 +388,20 @@ def sender_loop(config: Config, events: PersistentQueue, stop: threading.Event) 
                 print(f"sent {payload['idempotency_key']} total={payload['counter']['total']}", flush=True)
             else:
                 error = f"HTTP {response.status_code}: {response.text[:300]}"
-                events.fail(row_id, error)
-                print(error, file=sys.stderr, flush=True)
-                stop.wait(2.0)
+                delay = retry_delay(
+                    config,
+                    status_code=response.status_code,
+                    attempts=attempts,
+                    retry_after=response.headers.get("Retry-After", ""),
+                )
+                events.fail(row_id, error, delay)
+                print(f"{error} retry_in={delay:.0f}s", file=sys.stderr, flush=True)
+                stop.wait(min(delay, 30.0))
         except requests.RequestException as exc:
-            events.fail(row_id, str(exc))
-            print(f"send failed: {exc}", file=sys.stderr, flush=True)
-            stop.wait(2.0)
+            delay = retry_delay(config, status_code=None, attempts=attempts)
+            events.fail(row_id, str(exc), delay)
+            print(f"send failed: {exc} retry_in={delay:.0f}s", file=sys.stderr, flush=True)
+            stop.wait(min(delay, 30.0))
 
 
 def enqueue_measurement(config: Config, events: PersistentQueue, *, delta: float, extra: dict[str, Any] | None = None) -> None:
@@ -420,22 +488,11 @@ class PulseCycleDetector:
         if active_seconds < self.min_active_seconds:
             return None
         if self.max_active_seconds > 0 and active_seconds > self.max_active_seconds:
-            return {
-                "accepted": False,
-                "reason": "active_too_long",
-                "active_seconds": active_seconds,
-            }
+            return {"accepted": False, "reason": "active_too_long", "active_seconds": active_seconds}
         if self.candidate_since - self.last_emitted_at < self.min_interval_seconds:
-            return {
-                "accepted": False,
-                "reason": "rate_limited",
-                "active_seconds": active_seconds,
-            }
+            return {"accepted": False, "reason": "rate_limited", "active_seconds": active_seconds}
         self.last_emitted_at = self.candidate_since
-        return {
-            "accepted": True,
-            "active_seconds": active_seconds,
-        }
+        return {"accepted": True, "active_seconds": active_seconds}
 
 
 class DurationCycleDetector:
@@ -557,8 +614,7 @@ def run_pulse_mode(config: Config, events: PersistentQueue, stop: threading.Even
         flush=True,
     )
     while not stop.is_set():
-        now = time.monotonic()
-        result = detector.feed(bool(pin.value), now)
+        result = detector.feed(bool(pin.value), time.monotonic())
         if result and result.get("accepted"):
             enqueue_measurement(
                 config,
