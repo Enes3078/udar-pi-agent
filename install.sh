@@ -102,7 +102,7 @@ write_env_file() {
   url_onerisi="$(current_env_value UDAR_CRM_URL || true)"
   [[ "$url_onerisi" =~ ^https?://[^[:space:]]+$ ]] || url_onerisi=""
   while true; do
-    crm_url="$(ask_default "CRM adresi (orn: https://crm.aykadoor.com)" "$url_onerisi")"
+    crm_url="$(ask_default "CRM adresi (orn: https://crm.firmaniz.com)" "$url_onerisi")"
     [[ "$crm_url" =~ ^https?://[^[:space:]]+$ ]] && break
     echo "  Adres http:// ya da https:// ile baslamali. Girilen: '$crm_url'" >&2
   done
