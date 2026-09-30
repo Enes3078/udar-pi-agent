@@ -1,6 +1,12 @@
 [Unit]
 Description=UDAR CRM Raspberry Pi GPIO Machine Agent
-After=network-online.target
+# Saat: time-set.target, saatin kayitli son degerden kabaca kuruldugu andir
+# (internet beklemez). time-sync.target'a BILEREK baglanmadi: o ancak
+# systemd-time-wait-sync acikken bir sey bekler ve internet gelene kadar
+# SURESIZ bekler; o arada ajan hic baslamaz, vuruslar sayilmaz, kuyruga bile
+# yazilmaz. Ajan saati kendisi izler ve her kayda clock_synced ile
+# queue_age_seconds yazar; CRM zamani bunlarla duzeltebilir (README "Saat").
+After=network-online.target time-set.target
 Wants=network-online.target
 
 [Service]

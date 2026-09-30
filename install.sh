@@ -42,6 +42,17 @@ SORU_TTY="${UDAR_TTY:-/dev/tty}"
 # miras aldigi icin okuma konumu paylasilir.
 SORU_FD=9
 
+# UDAR_PULSE_MIN_INTERVAL_SECONDS onerisi (c = en kisa gercek cevrim, sn):
+# cevrimin yarisi, 0.01'e asagi yuvarlanir; yarisi 0.20'nin altina duser ve
+# cevrim 0.25 sn'den uzunsa ondeger 0.20 kalir. AYNI KURAL
+# udar_pi_agent.min_interval_suggestion'da; test ikisini karsilastirir.
+ARALIK_ONERISI_AWK='BEGIN { h = int(c * 100 / 2 + 0.000001) / 100; if (h < 0.20 && c > 0.25) h = 0.20; printf "%.2f\n", h }'
+
+# a < b mi? (ondalikli; bash tam sayi disinda karsilastiramaz)
+sayi_kucuk_mu() {
+  awk -v a="$1" -v b="$2" 'BEGIN { exit !(a + 0 < b + 0) }'
+}
+
 ask_default() {
   local prompt="$1"
   local default="$2"
@@ -65,6 +76,7 @@ ask_number() {
   [[ "$current" =~ $pattern ]] || current="$fallback"
   while true; do
     value="$(ask_default "$prompt" "$current")"
+    value="${value/,/.}"   # Turkce ondalik virgul: "1,5" -> "1.5"
     if [[ "$value" =~ $pattern ]]; then printf '%s\n' "$value"; return 0; fi
     echo "  Sayi girilmeli (ornek: $fallback). Girilen: '$value'" >&2
   done
@@ -96,7 +108,8 @@ write_env_file() {
     echo "[UDAR] Pi'nin terminalinde calistirin:  bash install.sh --configure" >&2
     return 1
   fi
-  local crm_url device_token gpio_bcm pull_up bounce poll_interval pulse_edge pulse_min_active pulse_rearm pulse_max_active pulse_min_interval mode duration_unit min_duration duration_active_level duration_start_stable duration_stop_stable station_code line_id operator_id note
+  local crm_url device_token gpio_bcm pull_up poll_interval pulse_edge pulse_min_active pulse_rearm pulse_max_active pulse_min_interval mode duration_unit min_duration duration_active_level duration_start_stable duration_stop_stable station_code line_id operator_id note
+  local edge_onerisi shortest_cycle interval_onerisi
 
   local url_onerisi
   url_onerisi="$(current_env_value UDAR_CRM_URL || true)"
@@ -117,13 +130,16 @@ write_env_file() {
   done
 
   gpio_bcm="$(ask_number "GPIO BCM pin numarasi (fiziksel pin 13 icin 27, fiziksel pin 11 icin 17)" "$(current_env_value UDAR_GPIO_BCM || true)" 27 integer)"
+  echo "Pull-up: false = kontak 3,3V ile pin arasinda (bosta pin 0);"
+  echo "         true  = kontak pin ile GND arasinda (bosta pin 1). README: Kablolama kontrol listesi."
   pull_up="$(ask_choice "Pull-up kullanilsin mi? true/false" "$(current_env_value UDAR_PULL_UP || true)" false true false)"
-  bounce="$(ask_number "Sinyal filtre suresi / bounce saniye" "$(current_env_value UDAR_BOUNCE_SECONDS || true)" 0.05)"
+  # UDAR_BOUNCE_SECONDS artik sorulmaz ve yazilmaz: Temmuz 2026'dan (391b844) beri
+  # kullanilmiyor; daha eski ajanda gpiozero Button bounce_time idi.
   poll_interval="$(ask_number "GPIO okuma araligi saniye" "$(current_env_value UDAR_POLL_INTERVAL_SECONDS || true)" 0.002)"
 
   echo
   echo "Makine tipi sec:"
-  echo "  1) Vurus / sayim bazli: her 0->1 sinyali 1 adet sayilir"
+  echo "  1) Vurus / sayim bazli: her tam sinyal (0->1->0) 1 adet sayilir"
   echo "  2) Sure bazli: sinyal 1 kaldigi sure saniye olarak toplanir"
   local machine_choice default_choice
   default_choice="$(current_env_value UDAR_MEASUREMENT_MODE || true)"
@@ -148,12 +164,48 @@ write_env_file() {
     echo "Pulse kenari sec:"
     echo "  rising  : bos 0, vurus 1 ise"
     echo "  falling : bos 1, vurus 0 ise"
-    echo "  both    : her 0/1 degisimini say"
-    pulse_edge="$(ask_choice "Pulse kenari" "$(current_env_value UDAR_PULSE_EDGE || true)" rising rising falling both)"
+    edge_onerisi="$(current_env_value UDAR_PULSE_EDGE || true)"
+    if [ "$edge_onerisi" = "both" ]; then
+      # 'both' her zaman rising gibi calisti (tam cevrimi 1 sayar); oneri rising.
+      echo "  Not: onceki ayar 'both' idi. Ajan onu zaten 'rising' gibi calistiriyordu;"
+      echo "       'rising' secerseniz sayim DEGISMEZ."
+    fi
+    pulse_edge="$(ask_choice "Pulse kenari" "$edge_onerisi" rising rising falling)"
+    if { [ "$pull_up" = "true" ] && [ "$pulse_edge" = "rising" ]; } || { [ "$pull_up" = "false" ] && [ "$pulse_edge" = "falling" ]; }; then
+      echo "  UYARI: pull-up=$pull_up ile '$pulse_edge' genelde uyusmaz (bosta pin ters seviyede kalir)." >&2
+      echo "         Kablolamayi README 'Kablolama kontrol listesi' 3. maddeye gore kontrol edin." >&2
+    fi
+
+    echo
+    echo "Makinenin en kisa GERCEK cevrimi (bir isin basindan sonrakinin basina en kisa sure) kac saniye?"
+    echo "  diagnose_gpio.py ile gercek is sayisini girerek olctuyseniz ozetteki \"install.sh 'en kisa"
+    echo "  gercek cevrim' sorusunun cevabi\" satirindaki degeri yazin (tek aykiri olcum degil, iki cevrim"
+    echo "  arasinin alt %10'u; bu satir yalniz is sayisiyla kontrol edilmis olcumde yazar)."
+    echo "  Bilmiyorsaniz 0 yazin: oneri yapilmaz, mevcut ayar korunur."
+    shortest_cycle="$(ask_number "En kisa gercek cevrim (sn)" "0" 0)"
+
     pulse_min_active="$(ask_number "Sinyalin en az aktif kalacagi sure (sn)" "$(current_env_value UDAR_PULSE_MIN_ACTIVE_SECONDS || true)" 0.02)"
     pulse_rearm="$(ask_number "Yeni vurus oncesi pasif kalma suresi (sn)" "$(current_env_value UDAR_PULSE_REARM_SECONDS || true)" 0.20)"
     pulse_max_active="$(ask_number "Tek vurusun azami aktif suresi (sn)" "$(current_env_value UDAR_PULSE_MAX_ACTIVE_SECONDS || true)" 10.0)"
-    pulse_min_interval="$(ask_number "Iki vurus arasindaki asgari sure (sn)" "$(current_env_value UDAR_PULSE_MIN_INTERVAL_SECONDS || true)" 0.20)"
+
+    interval_onerisi="$(current_env_value UDAR_PULSE_MIN_INTERVAL_SECONDS || true)"
+    if sayi_kucuk_mu 0 "$shortest_cycle"; then
+      interval_onerisi="$(awk -v c="$shortest_cycle" "$ARALIK_ONERISI_AWK")"
+      echo "  Oneri: en kisa cevrim $shortest_cycle sn -> iki vurus arasi en az $interval_onerisi sn."
+      if ! sayi_kucuk_mu 0.25 "$shortest_cycle"; then
+        echo "  UYARI: makine cok hizli; tek tek vurus saymak hataya acik. Mumkunse makinenin kendi" >&2
+        echo "         sayacini kullanin; degilse diagnose_gpio.py onerilerini girin." >&2
+      fi
+    fi
+    while true; do
+      pulse_min_interval="$(ask_number "Iki vurus arasindaki asgari sure (sn)" "$interval_onerisi" 0.20)"
+      # Bu sure en kisa gercek cevrimden kisa olmali; yoksa gercek vuruslar sayilmaz.
+      if sayi_kucuk_mu 0 "$shortest_cycle" && ! sayi_kucuk_mu "$pulse_min_interval" "$shortest_cycle"; then
+        echo "  Bu deger en kisa cevrimden ($shortest_cycle sn) KUCUK olmali; yoksa gercek vuruslar sayilmaz." >&2
+        continue
+      fi
+      break
+    done
     duration_unit="seconds"
     min_duration="$(current_env_value UDAR_MIN_DURATION_SECONDS || true)"
     min_duration="${min_duration:-0.2}"
@@ -161,7 +213,7 @@ write_env_file() {
     note="${note:-GPIO${gpio_bcm} vurus sayimi}"
   fi
 
-  station_code="$(ask_default "Istasyon kodu (orn: LZR-1, bos kalabilir)" "$(current_env_value UDAR_STATION_CODE || true)")"
+  station_code="$(ask_default "Istasyon kodu (orn: M-01, bos kalabilir)" "$(current_env_value UDAR_STATION_CODE || true)")"
   line_id="$(ask_default "Is emri satir ID (genelde bos birak)" "$(current_env_value UDAR_LINE_ID || true)")"
   operator_id="$(ask_default "Operator ID (genelde bos birak)" "$(current_env_value UDAR_OPERATOR_ID || true)")"
 
@@ -180,7 +232,6 @@ UDAR_DEVICE_TOKEN=$device_token
 
 UDAR_GPIO_BCM=$gpio_bcm
 UDAR_PULL_UP=$pull_up
-UDAR_BOUNCE_SECONDS=$bounce
 UDAR_POLL_INTERVAL_SECONDS=$poll_interval
 
 UDAR_MEASUREMENT_MODE=$mode
